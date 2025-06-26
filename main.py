@@ -69,7 +69,7 @@ def initialize_web_driver(download_folder: str) -> WebDriver:
         },
     )
 
-    # chrome_options.add_argument("--headless=new")  # Run in new headless mode (no GUI)
+    chrome_options.add_argument("--headless=new")  # Run in new headless mode (no GUI)
     chrome_options.add_argument(
         "--disable-gpu"
     )  # Needed for headless mode to be stable
