@@ -29,16 +29,12 @@ def is_valid_url(url: str) -> bool:
 
 def extract_filename_from_url(url: str) -> str:
     """Extract and return the file name from the URL path."""
-    path: str = urlparse(url=url).path  # Get only the path portion of the URL
-    filename: str = os.path.basename(
-        unquote(string=path)
-    ).lower()  # Decode and get the file name from path
-    return filename if filename else "downloaded.pdf"  # Fallback filename if none found
+    if "documentID=" in url:
+        return url.split(sep="documentID=")[1]+".pdf"  # Extract filename after 'documentID='
 
 
 def file_exists(file_path: str) -> bool:
-    """Check if a file al
-    y exists at the specified path."""
+    """Check if a file exists at the specified path."""
     return os.path.isfile(file_path)  # Returns True if file exists
 
 
