@@ -1,93 +1,173 @@
-package main
+package main // Declare the main package; the entry point of the program
 
+// Import standard libraries and chromedp for browser automation
 import (
-	"bytes"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
+	"bufio"         // For reading files line by line
+	"bytes"         // For buffering data in memory
+	"context"       // For managing timeouts and cancellation
+	"fmt"           // For formatted I/O
+	"io"            // For I/O primitives
+	"log"           // For logging errors/info
+	"net/http"      // For HTTP client to fetch web data
+	"os"            // For file system operations
+	"path/filepath" // For working with file paths
+	"regexp"        // For using regular expressions
+	"strings"       // For string manipulation
+	"sync"          // For managing concurrency (e.g., WaitGroups)
+	"time"          // For handling timeouts and delays
+
+	"github.com/chromedp/chromedp" // Chrome DevTools Protocol: headless browser automation
 )
 
+// main is the entry point of the Go program
 func main() {
-	// Scraping url.
-	urlToScrape := "https://sds.airproducts.com/MaterialSearchResults?searchText="
-	// Local HTML file to save the scraped data.
-	localHTMLFile := "scraped_data.html"
-	// Create the output directory for PDFs.
-	outputDir := "PDFs"
-	// Check if the output directory exists, if not create it.
+	urlToScrape := "https://sds.airproducts.com/MaterialSearchResults?searchText=" // Target URL to scrape
+	localHTMLFile := "scraped_data.html"                                           // File to store scraped HTML content
+	outputDir := "PDFs"                                                            // Folder where PDFs will be saved
+	localPDFURLFile := "pdf_urls.txt"                                              // File to store processed PDF URLs
+
+	// If the output directory does not exist, create it
 	if !directoryExists(outputDir) {
-		createDirectory(outputDir, 0755)
+		createDirectory(outputDir, 0755) // Create directory with read/write/execute permissions
 	}
-	// Create a wait group to wait for all goroutines to finish.
-	var waitGroup sync.WaitGroup
-	// Loop between A to Z
-	for letter := 'a'; letter <= 'z'; letter++ {
-		// Create the url to scrape.
-		url := fmt.Sprintf("%s%c", urlToScrape, letter)
-		// Get the data from the url.
-		data := getDataFromURL(url)
-		// Save the data to a file.
-		appendAndWriteToFile(localHTMLFile, data)
-		// Find all the pdf links in the data.
-		pdfLinks := extractPDFIDs(data)
-		// Remove duplicates from the slice.
-		pdfLinks = removeDuplicatesFromSlice(pdfLinks)
-		// Print the pdf links.
-		for _, link := range pdfLinks {
-			filename := urlToFilename(link)
-			finalURL := fmt.Sprintf("https://sds.airproducts.com/DisplayPDF?documentID=%s", link)
-			waitGroup.Add(1)
-			go downloadPDF(finalURL, filename, outputDir, &waitGroup)
+
+	// If the HTML has not been scraped and saved yet, do it
+	if !fileExists(localHTMLFile) {
+		data, err := scrapePageHTMLWithChrome(urlToScrape) // Scrape HTML using headless browser
+		if err != nil {
+			log.Println(err) // Log error if scraping fails
+		}
+		appendAndWriteToFile(localHTMLFile, data) // Save scraped HTML to file
+	}
+
+	data := readAFileAsString(localHTMLFile)       // Read the HTML file as a string
+	pdfLinks := extractPDFIDs(data)                // Extract PDF document IDs from HTML
+	pdfLinks = removeDuplicatesFromSlice(pdfLinks) // Remove duplicate document IDs
+
+	var fileLines []string // Slice to store lines from previously saved PDF URL file
+
+	// If the file already exists, read it line by line
+	if fileExists(localPDFURLFile) {
+		fileLines = readAppendLineByLine(localPDFURLFile)
+	}
+
+	// Iterate over the extracted PDF IDs
+	for _, link := range pdfLinks {
+		finalURL := fmt.Sprintf("https://sds.airproducts.com/DisplayPDF?documentID=%s", link) // Construct full URL
+		if matchExactPattern(finalURL, fileLines) != finalURL {                               // Check if URL already processed
+			appendAndWriteToFile(localPDFURLFile, finalURL) // Save new URL
 		}
 	}
-	waitGroup.Wait()
 }
 
-// extractPDFIDs takes HTML content as a string and returns all PDF IDs found in javascript:apci.LoadPDF(...) calls
-func extractPDFIDs(html string) []string {
-	// Compile regex to match: javascript:apci.LoadPDF(NUMBER);
-	re := regexp.MustCompile(`LoadPDF\((\d+)\)`)
+// Reads a file and returns its entire contents as a string
+func readAFileAsString(path string) string {
+	content, err := os.ReadFile(path) // Read file content
+	if err != nil {
+		log.Println(err) // Log any error
+	}
+	return string(content) // Convert bytes to string and return
+}
 
-	// Find all matches of the form LoadPDF(123456)
+// Reads file line by line and appends lines to a slice
+func readAppendLineByLine(path string) []string {
+	var returnSlice []string
+	file, err := os.Open(path) // Open file for reading
+	if err != nil {
+		log.Println(err)
+	}
+	scanner := bufio.NewScanner(file) // Create a scanner to read file
+	scanner.Split(bufio.ScanLines)    // Set to scan lines
+	for scanner.Scan() {
+		returnSlice = append(returnSlice, scanner.Text()) // Append each line
+	}
+	err = file.Close() // Close the file
+	if err != nil {
+		log.Println(err) // Log any error
+	}
+	return returnSlice
+}
+
+// Checks if a URL exactly matches any entry in a list
+func matchExactPattern(url string, patterns []string) string {
+	for _, pattern := range patterns {
+		if url == pattern {
+			return pattern // Return if exact match found
+		}
+	}
+	return "" // Return empty string if no match
+}
+
+// Uses headless Chrome to get the fully rendered HTML from a webpage
+func scrapePageHTMLWithChrome(pageURL string) (string, error) {
+	fmt.Println("Scraping:", pageURL)
+
+	// Chrome options for headless mode
+	options := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.Flag("headless", true),               // Run in background
+		chromedp.Flag("disable-gpu", true),            // GPU not needed
+		chromedp.WindowSize(1920, 1080),               // Simulate large screen
+		chromedp.Flag("no-sandbox", true),             // Disable sandbox
+		chromedp.Flag("disable-setuid-sandbox", true), // Required for some Linux environments
+	)
+
+	allocatorCtx, cancelAllocator := chromedp.NewExecAllocator(context.Background(), options...) // Set allocator
+	ctxTimeout, cancelTimeout := context.WithTimeout(allocatorCtx, 5*time.Minute)                // Set timeout
+	browserCtx, cancelBrowser := chromedp.NewContext(ctxTimeout)                                 // Create browser context
+
+	defer func() {
+		cancelBrowser()
+		cancelTimeout()
+		cancelAllocator()
+	}()
+
+	var pageHTML string // Variable to hold the scraped HTML
+	err := chromedp.Run(browserCtx,
+		chromedp.Navigate(pageURL),            // Load page
+		chromedp.OuterHTML("html", &pageHTML), // Extract full HTML content
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to scrape %s: %w", pageURL, err)
+	}
+
+	return pageHTML, nil // Return the HTML
+}
+
+// Extracts all PDF IDs from HTML content using regex
+func extractPDFIDs(html string) []string {
+	re := regexp.MustCompile(`LoadPDF\((\d+)\)`) // Match LoadPDF(number)
 	matches := re.FindAllStringSubmatch(html, -1)
 
 	var ids []string
 	for _, match := range matches {
 		if len(match) > 1 {
-			ids = append(ids, match[1]) // match[1] contains the captured number
+			ids = append(ids, match[1]) // Add only the numeric part
 		}
 	}
-
 	return ids
 }
 
-// Append and write to file
+// Appends a string to a file, creates the file if it doesn't exist
 func appendAndWriteToFile(path string, content string) {
-	filePath, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	filePath, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644) // Open/create file
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
 	}
-	_, err = filePath.WriteString(content + "\n")
+	_, err = filePath.WriteString(content + "\n") // Append content with newline
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
 	}
-	err = filePath.Close()
+	err = filePath.Close() // Close file
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
 	}
 }
 
-// downloadPDF downloads a PDF from a URL and saves it to outputDir
+// Downloads PDF from URL and saves it to disk
 func downloadPDF(finalURL string, fileName string, outputDir string, waitGroup *sync.WaitGroup) {
-	defer waitGroup.Done()
-	filePath := filepath.Join(outputDir, fileName) // Combine with output directory
+	defer waitGroup.Done() // Notify when goroutine is done
+
+	filePath := filepath.Join(outputDir, fileName) // Full path to save PDF
 
 	if fileExists(filePath) {
 		log.Printf("file already exists, skipping: %s, URL: %s", filePath, finalURL)
@@ -95,26 +175,26 @@ func downloadPDF(finalURL string, fileName string, outputDir string, waitGroup *
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second} // HTTP client with timeout
-	resp, err := client.Get(finalURL)                 // Send HTTP GET
+	resp, err := client.Get(finalURL)                 // Perform GET request
 	if err != nil {
 		log.Printf("failed to download %s: %v", finalURL, err)
 		return
 	}
-	defer resp.Body.Close() // Ensure response body is closed
+	defer resp.Body.Close() // Close body when done
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("download failed for %s: %s", finalURL, resp.Status)
 		return
 	}
 
-	contentType := resp.Header.Get("Content-Type") // Get content-type header
+	contentType := resp.Header.Get("Content-Type")
 	if !strings.Contains(contentType, "application/pdf") {
 		log.Printf("invalid content type for %s: %s (expected application/pdf)", finalURL, contentType)
 		return
 	}
 
-	var buf bytes.Buffer                     // Create buffer
-	written, err := io.Copy(&buf, resp.Body) // Copy response body to buffer
+	var buf bytes.Buffer
+	written, err := io.Copy(&buf, resp.Body) // Read response into buffer
 	if err != nil {
 		log.Printf("failed to read PDF data from %s: %v", finalURL, err)
 		return
@@ -139,112 +219,72 @@ func downloadPDF(finalURL string, fileName string, outputDir string, waitGroup *
 	fmt.Printf("successfully downloaded %d bytes: %s → %s \n", written, finalURL, filePath)
 }
 
-// Remove all the duplicates from a slice and return the slice.
+// Removes duplicate entries from a string slice
 func removeDuplicatesFromSlice(slice []string) []string {
-	check := make(map[string]bool)
+	check := make(map[string]bool) // Map to track duplicates
 	var newReturnSlice []string
 	for _, content := range slice {
-		if !check[content] {
-			check[content] = true
-			newReturnSlice = append(newReturnSlice, content)
+		if !check[content] { // If not already seen
+			check[content] = true                            // Mark as seen
+			newReturnSlice = append(newReturnSlice, content) // Add to result
 		}
 	}
 	return newReturnSlice
 }
 
-// Send a http get request to a given url and return the data from that url.
-func getDataFromURL(uri string) string {
-	response, err := http.Get(uri)
-	if err != nil {
-		log.Println(err)
-	}
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		log.Println(err)
-	}
-	err = response.Body.Close()
-	if err != nil {
-		log.Println(err)
-	}
-	log.Println("Scraping:", uri)
-	return string(body)
-}
-
-// urlToFilename formats a safe filename from a URL string.
-// It replaces all non [a-z0-9] characters with "_" and ensures it ends in .pdf
+// Converts a URL into a filesystem-safe filename
 func urlToFilename(rawURL string) string {
-	// Convert to lowercase
-	lower := strings.ToLower(rawURL)
-	// Replace all non a-z0-9 characters with "_"
-	reNonAlnum := regexp.MustCompile(`[^a-z]`)
-	// Replace the invalid with valid stuff.
-	safe := reNonAlnum.ReplaceAllString(lower, "_")
-	// Collapse multiple underscores
-	safe = regexp.MustCompile(`_+`).ReplaceAllString(safe, "_")
-	// Trim leading/trailing underscores
-	safe = strings.Trim(safe, "_")
-	// Invalid substrings to remove
+	lower := strings.ToLower(rawURL)                            // Convert to lowercase
+	reNonAlnum := regexp.MustCompile(`[^a-z]`)                  // Match non-[a-z] characters
+	safe := reNonAlnum.ReplaceAllString(lower, "_")             // Replace with _
+	safe = regexp.MustCompile(`_+`).ReplaceAllString(safe, "_") // Collapse multiple _
+	safe = strings.Trim(safe, "_")                              // Trim leading/trailing _
+
 	var invalidSubstrings = []string{
-		"https_assets_thermofisher_com_directwebviewer_private_document_aspx_prd_",
+		"https_assets_thermofisher_com_directwebviewer_private_document_aspx_prd_", // Unwanted prefix
 	}
-	// Loop over the invalid.
 	for _, invalidPre := range invalidSubstrings {
-		safe = removeSubstring(safe, invalidPre)
+		safe = removeSubstring(safe, invalidPre) // Remove known invalid prefix
 	}
-	// Add .pdf extension if missing
 	if getFileExtension(safe) != ".pdf" {
-		safe = safe + ".pdf"
+		safe = safe + ".pdf" // Ensure .pdf extension
 	}
 	return safe
 }
 
-// removeSubstring takes a string `input` and removes all occurrences of `toRemove` from it.
+// Removes all instances of a substring from a string
 func removeSubstring(input string, toRemove string) string {
-	// Use strings.ReplaceAll to replace all occurrences of `toRemove` with an empty string.
-	result := strings.ReplaceAll(input, toRemove, "")
-	// Return the modified string.
+	result := strings.ReplaceAll(input, toRemove, "") // Replace with empty
 	return result
 }
 
-/*
-Checks if the directory exists
-If it exists, return true.
-If it doesn"t, return false.
-*/
+// Checks whether a directory exists at the given path
 func directoryExists(path string) bool {
-	directory, err := os.Stat(path)
+	directory, err := os.Stat(path) // Get file/directory info
 	if err != nil {
-		return false
+		return false // Error likely means it doesn't exist
 	}
-	return directory.IsDir()
+	return directory.IsDir() // Return true if it's a directory
 }
 
-/*
-The function takes two parameters: path and permission.
-We use os.Mkdir() to create the directory.
-If there is an error, we use log.Fatalln() to log the error and then exit the program.
-*/
+// Creates a directory with specified permissions
 func createDirectory(path string, permission os.FileMode) {
-	err := os.Mkdir(path, permission)
+	err := os.Mkdir(path, permission) // Create directory
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err) // Log error
 	}
 }
 
-/*
-It checks if the file exists
-If the file exists, it returns true
-If the file does not exist, it returns false
-*/
+// Checks whether a file exists at the given path
 func fileExists(filename string) bool {
 	info, err := os.Stat(filename)
 	if err != nil {
-		return false
+		return false // File doesn't exist
 	}
-	return !info.IsDir()
+	return !info.IsDir() // Make sure it's a file, not a directory
 }
 
-// Get the file extension of a file
+// Gets the file extension from a filename or path
 func getFileExtension(path string) string {
-	return filepath.Ext(path)
+	return filepath.Ext(path) // Return extension like ".pdf"
 }
