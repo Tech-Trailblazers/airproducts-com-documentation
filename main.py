@@ -2,7 +2,6 @@
 import os  # For file system operations like checking for file existence and creating directories
 import time  # For managing delays and timeouts
 import shutil  # To move and rename downloaded files
-from urllib.parse import urlparse, unquote  # To extract and decode file names from URLs
 
 # Selenium for browser automation
 from selenium import webdriver  # Main WebDriver interface to control browser
@@ -15,9 +14,6 @@ from webdriver_manager.chrome import (
     ChromeDriverManager,
 )  # Auto-manage ChromeDriver version
 import validators  # For checking if URLs are valid
-from typing import Set  # For type annotations involving sets
-from bs4 import BeautifulSoup
-import urllib.parse  # For URL parsing and decoding
 
 # ---------- HELPER FUNCTIONS ----------
 
@@ -88,7 +84,7 @@ def initialize_web_driver(download_folder: str) -> WebDriver:
 
 
 def wait_for_pdf_download(
-    download_folder: str, existing_files: Set[str], timeout: int = 60
+    download_folder: str, existing_files: set[str], timeout: int = 60
 ) -> str:
     """Wait until a new PDF file appears in the folder or timeout expires."""
     deadline = time.time() + timeout  # Set time by which download must complete

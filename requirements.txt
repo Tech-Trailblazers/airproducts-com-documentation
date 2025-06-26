@@ -1,1 +1,4 @@
+selenium==4.33.0
+validators==0.35.0
+webdriver_manager==4.0.2
 PyMuPDF==1.25.5
